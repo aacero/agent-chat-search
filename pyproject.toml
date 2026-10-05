@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-chat-search"
+version = "1.1.0"
+description = "Unified, zero-token full-text search across Hermes, Google Antigravity, OpenClaw, Codex, and Claude Code chats"
+readme = "README.md"
+authors = [
+    { name = "Tony Acero" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+keywords = [
+    "ai-agents",
+    "search",
+    "fts5",
+    "sqlite",
+    "mcp",
+    "model-context-protocol",
+    "hermes",
+    "antigravity",
+    "openclaw",
+    "codex",
+    "claude-code"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities"
+]
+dependencies = []
+
+[project.scripts]
+agent-search = "agent_search.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/aacero/agent-chat-search"
+Repository = "https://github.com/aacero/agent-chat-search"
+"Issue Tracker" = "https://github.com/aacero/agent-chat-search/issues"

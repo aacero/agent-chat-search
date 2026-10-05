@@ -1,0 +1,42 @@
+# agent-chat-search configuration template
+# Copy to ~/.config/agent-chat-search/config.toml
+
+[database]
+# Path to the aggregated SQLite database
+path = "~/.local/share/agent-chat-search/fleet_chats.db"
+
+[server]
+# Bind address and port for centralized HTTP/MCP search daemon
+host = "127.0.0.1"
+port = 8890
+url = "http://127.0.0.1:8890"
+
+# Optional shared bearer token for API authentication (recommended if exposed over network)
+# auth_token = "generate-a-secure-random-token-here"
+
+[fleet]
+# SSH user and identity file for remote fleet nodes
+# ssh_user = "username"
+# ssh_key = "~/.ssh/id_ed25519"
+
+# Fleet hosts to poll / federate
+hosts = [
+    # "workstation",
+    # "laptop",
+    # "cloud-node"
+]
+
+[sources]
+# Enable/disable specific agent transcript ingestors
+hermes = true
+antigravity = true
+openclaw = true
+codex = true
+claude = true
+
+[security]
+# Automatically scrub detected API keys, tokens, and private keys before indexing
+redact_secrets = true
+
+# Allowed CORS origins (leave empty to disable CORS)
+# allowed_origins = ["http://localhost:3000"]
