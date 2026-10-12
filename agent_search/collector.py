@@ -31,14 +31,14 @@ class FleetCollector:
         self.ssh_user = ssh_user or cfg.ssh_user
         self.sources = cfg.sources
 
-    def sync_local(self, dest_conn: sqlite3.Connection) -> Dict[str, int]:
+    def sync_local(self, dest_conn: sqlite3.Connection, force: bool = False) -> Dict[str, int]:
         results = {}
 
         # Hermes
         if self.sources.get("hermes", True):
             try:
                 h = HermesIngestor(self.current_host)
-                results["hermes"] = h.ingest(dest_conn)
+                results["hermes"] = h.ingest(dest_conn, force=force)
             except Exception as e:
                 results["hermes_error"] = str(e)
 
@@ -46,7 +46,7 @@ class FleetCollector:
         if self.sources.get("antigravity", True):
             try:
                 a = AntigravityIngestor(self.current_host)
-                results["agy"] = a.ingest(dest_conn)
+                results["agy"] = a.ingest(dest_conn, force=force)
             except Exception as e:
                 results["agy_error"] = str(e)
 
@@ -54,7 +54,7 @@ class FleetCollector:
         if self.sources.get("openclaw", True):
             try:
                 o = OpenClawIngestor(self.current_host)
-                results["openclaw"] = o.ingest(dest_conn)
+                results["openclaw"] = o.ingest(dest_conn, force=force)
             except Exception as e:
                 results["openclaw_error"] = str(e)
 

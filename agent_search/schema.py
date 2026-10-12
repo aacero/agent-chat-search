@@ -69,7 +69,9 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE OF title, project ON sessions BEGIN
+CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE OF title, project ON sessions
+WHEN old.title IS NOT new.title OR old.project IS NOT new.project
+BEGIN
     UPDATE messages_fts SET
         title = new.title,
         project = new.project
@@ -88,6 +90,68 @@ CREATE TABLE IF NOT EXISTS sync_meta (
 def get_db_path() -> str:
     return get_config().db_path
 
+def reconcile_schema_and_triggers(conn: sqlite3.Connection):
+    """
+    Reconciles existing database triggers to ensure optimal FTS5 performance:
+    - messages_ai must explicitly write rowid = new.id.
+    - messages_ad must delete by rowid = old.id (O(1) B-tree lookup), not unindexed msg_id.
+    - sessions_au must include WHEN condition to prevent table scans on unindexed virtual columns.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
+    triggers = {row[0]: row[1] or "" for row in cur.fetchall()}
+
+    # Reconcile messages_ad
+    if "messages_ad" in triggers:
+        sql = triggers["messages_ad"]
+        if "rowid" not in sql:
+            conn.execute("DROP TRIGGER IF EXISTS messages_ad;")
+            conn.execute("""
+                CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+                    DELETE FROM messages_fts WHERE rowid = old.id;
+                END;
+            """)
+
+    # Reconcile messages_ai
+    if "messages_ai" in triggers:
+        sql = triggers["messages_ai"]
+        if "rowid" not in sql.split("INSERT INTO messages_fts", 1)[-1].split("SELECT", 1)[0]:
+            conn.execute("DROP TRIGGER IF EXISTS messages_ai;")
+            conn.execute("""
+                CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+                    INSERT INTO messages_fts(rowid, content, title, project, host, agent, role, session_uid, msg_id)
+                    SELECT
+                        new.id,
+                        new.content,
+                        s.title,
+                        s.project,
+                        new.host,
+                        new.agent,
+                        new.role,
+                        new.session_uid,
+                        new.id
+                    FROM sessions s WHERE s.uid = new.session_uid;
+                END;
+            """)
+
+    # Reconcile sessions_au
+    if "sessions_au" in triggers:
+        sql = triggers["sessions_au"]
+        if "WHEN" not in sql.upper():
+            conn.execute("DROP TRIGGER IF EXISTS sessions_au;")
+            conn.execute("""
+                CREATE TRIGGER sessions_au AFTER UPDATE OF title, project ON sessions
+                WHEN old.title IS NOT new.title OR old.project IS NOT new.project
+                BEGIN
+                    UPDATE messages_fts SET
+                        title = new.title,
+                        project = new.project
+                    WHERE session_uid = new.uid;
+                END;
+            """)
+
+    conn.commit()
+
 def init_db(db_path: Optional[str] = None) -> sqlite3.Connection:
     if not db_path:
         db_path = get_db_path()
@@ -97,5 +161,6 @@ def init_db(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON;")
     conn.execute("PRAGMA recursive_triggers=ON;")
     conn.executescript(SCHEMA_SQL)
+    reconcile_schema_and_triggers(conn)
     conn.commit()
     return conn

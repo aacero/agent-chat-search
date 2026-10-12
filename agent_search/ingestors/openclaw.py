@@ -10,9 +10,17 @@ class OpenClawIngestor(BaseIngestor):
         super().__init__(host)
         self.base_dir = base_dir or os.path.expanduser("~/.openclaw/agents")
 
-    def ingest(self, dest_conn: sqlite3.Connection) -> int:
+    def ingest(self, dest_conn: sqlite3.Connection, force: bool = False) -> int:
         if not os.path.exists(self.base_dir):
             return 0
+
+        # Query existing sessions in dest_conn for incremental indexing
+        dest_cur = dest_conn.cursor()
+        dest_cur.execute(
+            "SELECT uid, message_count FROM sessions WHERE host = ? AND agent = 'openclaw'",
+            (self.host,)
+        )
+        existing_sessions = dict(dest_cur.fetchall())
 
         pattern = os.path.join(self.base_dir, "*", "agent", "openclaw-agent.sqlite")
         db_paths = glob.glob(pattern)
@@ -88,9 +96,15 @@ class OpenClawIngestor(BaseIngestor):
                 for s_id in all_sessions:
                     s_info = sessions_map.get(s_id, {})
                     session_uid = f"{self.host}:openclaw:{agent_name}:{s_id}"
+                    msg_list = messages_by_session.get(s_id, [])
+
+                    # If session already indexed with identical message count, skip
+                    if not force and session_uid in existing_sessions:
+                        if existing_sessions[session_uid] == len(msg_list):
+                            continue
+
                     project = s_info.get("project", "")
                     started_at = s_info.get("started_at", 0.0)
-                    msg_list = messages_by_session.get(s_id, [])
 
                     # Generate title from first user message if available
                     title = f"OpenClaw ({agent_name}) Session"

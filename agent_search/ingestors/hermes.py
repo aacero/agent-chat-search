@@ -8,7 +8,7 @@ class HermesIngestor(BaseIngestor):
         super().__init__(host)
         self.db_path = db_path or os.path.expanduser("~/.hermes/state.db")
 
-    def ingest(self, dest_conn: sqlite3.Connection) -> int:
+    def ingest(self, dest_conn: sqlite3.Connection, force: bool = False) -> int:
         if not os.path.exists(self.db_path):
             return 0
 
@@ -19,6 +19,14 @@ class HermesIngestor(BaseIngestor):
         messages_indexed = 0
 
         try:
+            # Check existing sessions in dest_conn to allow incremental indexing
+            dest_cur = dest_conn.cursor()
+            dest_cur.execute(
+                "SELECT native_id, message_count, title FROM sessions WHERE host = ? AND agent = 'hermes'",
+                (self.host,)
+            )
+            existing_sessions = {r[0]: (r[1], r[2]) for r in dest_cur.fetchall()}
+
             # Query sessions
             src_cursor.execute("""
                 SELECT id, title, model, started_at, cwd, git_repo_root, message_count
@@ -29,6 +37,14 @@ class HermesIngestor(BaseIngestor):
             for s in sessions:
                 session_uid = f"{self.host}:hermes:{s['id']}"
                 project = s['git_repo_root'] or s['cwd'] or ""
+                sess_msg_cnt = s['message_count'] or 0
+                sess_title = s['title'] or "Untitled Session"
+
+                # If session already indexed with identical message count and title, skip
+                if not force and s['id'] in existing_sessions:
+                    old_cnt, old_title = existing_sessions[s['id']]
+                    if old_cnt == sess_msg_cnt and old_title == sess_title:
+                        continue
 
                 dest_conn.execute("""
                     INSERT OR REPLACE INTO sessions(uid, host, agent, native_id, title, project, model, started_at, message_count, source_path)
@@ -37,11 +53,11 @@ class HermesIngestor(BaseIngestor):
                     session_uid,
                     self.host,
                     s['id'],
-                    s['title'] or "Untitled Session",
+                    sess_title,
                     project,
                     s['model'] or "",
                     s['started_at'],
-                    s['message_count'] or 0,
+                    sess_msg_cnt,
                     self.db_path
                 ))
 

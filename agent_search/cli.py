@@ -104,6 +104,26 @@ def cmd_search(args, conn):
 
     if not results:
         print(f"No results found for '{query}'.")
+        if not args.local_only:
+            try:
+                cfg = get_config()
+                base_url = (getattr(args, "server_url", None) or cfg.server_url).rstrip("/")
+                auth_tok = getattr(args, "auth_token", None) or cfg.auth_token
+                req = urllib.request.Request(f"{base_url}/sync/status", headers=get_headers(auth_tok))
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    if resp.status == 200:
+                        st = json.loads(resp.read().decode("utf-8"))
+                        unreachable = [h for h, info in st.get("by_host", {}).items() if info.get("status") != "ok"]
+                        age = st.get("age_seconds")
+                        hints = []
+                        if age and age > 7200:
+                            hints.append(f"central index is {age//3600}h old")
+                        if unreachable:
+                            hints.append(f"{len(unreachable)} host(s) unreached: {', '.join(unreachable)}")
+                        if hints:
+                            print(f"\033[0;90m[Notice: {'; '.join(hints)}. Try 'agent-search --local' or check 'agent-search sync --status']\033[0m")
+            except Exception:
+                pass
         return
 
     print(f"\033[1;36mFound {len(results)} matches for:\033[0m \033[1m{query}\033[0m\n")
@@ -211,7 +231,7 @@ def cmd_sync(args, conn):
 
     collector = FleetCollector()
     print(f"Syncing local chat sources on {collector.current_host}...")
-    res = collector.sync_local(conn)
+    res = collector.sync_local(conn, force=getattr(args, "force", False))
     for k, v in res.items():
         print(f"  - {k}: {v} messages indexed")
     print("\n✓ Local sync complete.")

@@ -17,7 +17,7 @@ class BaseIngestor(abc.ABC):
         return text
 
     @abc.abstractmethod
-    def ingest(self, dest_conn: sqlite3.Connection) -> int:
+    def ingest(self, dest_conn: sqlite3.Connection, force: bool = False) -> int:
         """
         Ingests sessions and messages into dest_conn.
         Returns the number of messages indexed.

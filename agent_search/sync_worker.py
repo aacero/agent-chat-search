@@ -95,11 +95,18 @@ def sync_single_host(dest_conn: sqlite3.Connection, host: str, current_host: str
     # Remote host via SSH / rsync
     ssh_opts = f"ssh -i {collector.ssh_key} -o BatchMode=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=accept-new"
 
-    # 1. Trigger local index on remote host and checkpoint WAL
+    # 1. Trigger local index on remote host, checkpoint WAL non-blocking, and generate compact export
     remote_cmd = (
         "~/.local/bin/agent-search sync --local-only && "
-        "python3 -c \"import sqlite3, os; p=os.path.expanduser('~/.local/share/agent-chat-search/fleet_chats.db'); "
-        "c=sqlite3.connect(p); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close()\""
+        "python3 -c \"import sqlite3, os; "
+        "p=os.path.expanduser('~/.local/share/agent-chat-search/fleet_chats.db'); "
+        "e=os.path.expanduser('~/.local/share/agent-chat-search/export.db'); "
+        "c=sqlite3.connect(p); c.execute('PRAGMA wal_checkpoint(PASSIVE)'); c.close(); "
+        "os.path.exists(e) and os.remove(e); "
+        "dst=sqlite3.connect(e); dst.execute(f'ATTACH DATABASE \\\"{p}\\\" AS src'); "
+        f"dst.execute('CREATE TABLE sessions AS SELECT * FROM src.sessions WHERE host=\\\"{host}\\\"'); "
+        f"dst.execute('CREATE TABLE messages AS SELECT * FROM src.messages WHERE host=\\\"{host}\\\"'); "
+        "dst.commit(); dst.close()\""
     )
     cmd_index = [
         "ssh", "-i", collector.ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
@@ -127,53 +134,59 @@ def sync_single_host(dest_conn: sqlite3.Connection, host: str, current_host: str
     # 2. Pull SQLite database delta to secure temp directory
     with tempfile.TemporaryDirectory(prefix="fleet_sync_") as tmp_dir:
         tmp_path = os.path.join(tmp_dir, f"{host}_fleet_sync.db")
+        # Prefer compact export.db (sessions and messages only, omitting large FTS virtual table)
         cmd_pull = [
             "rsync", "-e", ssh_opts, "-avz",
-            f"{collector.ssh_user}@{host}:~/.local/share/agent-chat-search/fleet_chats.db",
+            f"{collector.ssh_user}@{host}:~/.local/share/agent-chat-search/export.db",
             tmp_path
         ]
-        try:
-            p2 = subprocess.run(cmd_pull, capture_output=True, timeout=180)
+        p2 = subprocess.run(cmd_pull, capture_output=True, timeout=180)
+        if p2.returncode != 0 or not os.path.exists(tmp_path):
+            # Fallback to full fleet_chats.db if export.db not produced
+            cmd_fallback = [
+                "rsync", "-e", ssh_opts, "-avz",
+                f"{collector.ssh_user}@{host}:~/.local/share/agent-chat-search/fleet_chats.db",
+                tmp_path
+            ]
+            p2 = subprocess.run(cmd_fallback, capture_output=True, timeout=180)
             if p2.returncode != 0 or not os.path.exists(tmp_path):
                 return {"host": host, "status": "pull_failed"}
 
-            # 3. Merge into master database with strict host filtering
-            safe_tmp_path = tmp_path.replace('"', '""')
-            attached = False
-            try:
-                dest_conn.execute(f'ATTACH DATABASE "{safe_tmp_path}" AS remote_db;')
-                attached = True
-                dest_conn.execute('INSERT OR REPLACE INTO sessions SELECT * FROM remote_db.sessions WHERE host = ?;', (host,))
-                dest_conn.execute('DELETE FROM messages WHERE host = ?;', (host,))
-                dest_conn.execute("""
-                    INSERT INTO messages(session_uid, host, agent, role, content, timestamp)
-                    SELECT session_uid, host, agent, role, content, timestamp
-                    FROM remote_db.messages
-                    WHERE host = ?;
-                """, (host,))
-                dest_conn.commit()
-            finally:
-                if attached:
-                    try:
-                        dest_conn.execute('DETACH DATABASE remote_db;')
-                    except Exception:
-                        pass
-
-            cur = dest_conn.cursor()
-            cur.execute("SELECT count(*) FROM sessions WHERE host = ?", (host,))
-            sess_cnt = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM messages WHERE host = ?", (host,))
-            msg_cnt = cur.fetchone()[0]
-
+        # 3. Merge into master database with strict host filtering
+        safe_tmp_path = tmp_path.replace('"', '""')
+        attached = False
+        try:
+            dest_conn.execute(f'ATTACH DATABASE "{safe_tmp_path}" AS remote_db;')
+            attached = True
+            dest_conn.execute('INSERT OR REPLACE INTO sessions SELECT * FROM remote_db.sessions WHERE host = ?;', (host,))
+            dest_conn.execute('DELETE FROM messages WHERE host = ?;', (host,))
             dest_conn.execute("""
-                INSERT OR REPLACE INTO sync_meta(host, last_synced_at, session_count, message_count, status)
-                VALUES (?, ?, ?, ?, 'ok')
-            """, (host, now, sess_cnt, msg_cnt))
+                INSERT INTO messages(session_uid, host, agent, role, content, timestamp)
+                SELECT session_uid, host, agent, role, content, timestamp
+                FROM remote_db.messages
+                WHERE host = ?;
+            """, (host,))
             dest_conn.commit()
+        finally:
+            if attached:
+                try:
+                    dest_conn.execute('DETACH DATABASE remote_db;')
+                except Exception:
+                    pass
 
-            return {"host": host, "status": "ok", "sessions": sess_cnt, "messages": msg_cnt}
-        except Exception as e:
-            return {"host": host, "status": "merge_error", "error": str(e)}
+        cur = dest_conn.cursor()
+        cur.execute("SELECT count(*) FROM sessions WHERE host = ?", (host,))
+        sess_cnt = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM messages WHERE host = ?", (host,))
+        msg_cnt = cur.fetchone()[0]
+
+        dest_conn.execute("""
+            INSERT OR REPLACE INTO sync_meta(host, last_synced_at, session_count, message_count, status)
+            VALUES (?, ?, ?, ?, 'ok')
+        """, (host, now, sess_cnt, msg_cnt))
+        dest_conn.commit()
+
+        return {"host": host, "status": "ok", "sessions": sess_cnt, "messages": msg_cnt}
 
 def run_fleet_sync(db_path: Optional[str] = None, hosts: Optional[List[str]] = None) -> Dict[str, Any]:
     global _SYNC_IN_PROGRESS

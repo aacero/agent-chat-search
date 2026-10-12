@@ -88,7 +88,7 @@ class AntigravityIngestor(BaseIngestor):
 
         return batch
 
-    def ingest(self, dest_conn: sqlite3.Connection) -> int:
+    def ingest(self, dest_conn: sqlite3.Connection, force: bool = False) -> int:
         if not os.path.exists(self.db_path):
             return 0
 
@@ -99,6 +99,14 @@ class AntigravityIngestor(BaseIngestor):
         messages_indexed = 0
 
         try:
+            # Check existing sessions in dest_conn to allow incremental indexing
+            dest_cur = dest_conn.cursor()
+            dest_cur.execute(
+                "SELECT native_id, message_count, started_at FROM sessions WHERE host = ? AND agent = 'agy'",
+                (self.host,)
+            )
+            existing_sessions = {r[0]: (r[1], r[2]) for r in dest_cur.fetchall()}
+
             src_cursor.execute("""
                 SELECT conversation_id, title, preview, step_count, last_modified_time, workspace_uris
                 FROM conversation_summaries
@@ -107,6 +115,15 @@ class AntigravityIngestor(BaseIngestor):
 
             for s in summaries:
                 conv_id = s['conversation_id']
+                started_at = self._parse_timestamp(s['last_modified_time'])
+                sess_steps = s['step_count'] or 0
+
+                # If session already indexed with identical step count and time, skip
+                if not force and conv_id in existing_sessions:
+                    old_steps, old_started = existing_sessions[conv_id]
+                    if old_steps == sess_steps and abs((old_started or 0.0) - started_at) < 1.0:
+                        continue
+
                 session_uid = f"{self.host}:agy:{conv_id}"
 
                 # Extract project from workspace_uris JSON
@@ -118,8 +135,6 @@ class AntigravityIngestor(BaseIngestor):
                             project = uris[0].replace("file://", "")
                     except Exception:
                         project = s['workspace_uris']
-
-                started_at = self._parse_timestamp(s['last_modified_time'])
 
                 dest_conn.execute("""
                     INSERT OR REPLACE INTO sessions(uid, host, agent, native_id, title, project, model, started_at, message_count, source_path)
